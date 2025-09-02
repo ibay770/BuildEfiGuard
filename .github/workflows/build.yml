@@ -2,7 +2,7 @@ name: Build EfiGuard
 
 on:
   push:
-    branches: [ main ]
+    branches: [ ]
   pull_request:
   workflow_dispatch:
 
