@@ -1,0 +1,226 @@
+name: Build EfiGuard
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      WORK_SPACE: ${{ github.workspace }}
+      EDK2_DIR: ${{ github.workspace }}\edk2
+      PKG_DIR: ${{ github.workspace }}\edk2\EfiGuardPkg
+
+    steps:
+      - name: Show Runner Info
+        shell: powershell
+        run: |
+          $PSVersionTable.PSVersion
+          cmd /c ver
+
+      - name: Configure Git (long paths)
+        shell: powershell
+        run: |
+          git config --global core.longpaths true
+
+      # --- Sources ---
+      - name: Clone EDK II (skip if exists)
+        shell: powershell
+        run: |
+          if (Test-Path "$env:EDK2_DIR") {
+            Write-Host "SKIP: $env:EDK2_DIR already exists."
+          } else {
+            git clone --recursive https://github.com/tianocore/edk2.git "$env:EDK2_DIR"
+          }
+
+      - name: Clone EfiGuard into edk2/EfiGuardPkg (skip if exists)
+        shell: powershell
+        run: |
+          $dst = "$env:PKG_DIR"
+          if (Test-Path $dst) {
+            Write-Host "SKIP: $dst already exists."
+          } else {
+            git clone --recursive https://github.com/Mattiwatti/EfiGuard.git $dst
+          }
+
+      - name: Clone VisualUefi into WORK_SPACE (skip if exists)
+        shell: powershell
+        run: |
+          $dst = Join-Path $env:WORK_SPACE 'VisualUefi'
+          if (Test-Path $dst) {
+            Write-Host "SKIP: $dst already exists."
+          } else {
+            git clone --recursive https://github.com/ionescu007/VisualUefi.git $dst
+          }
+          "VISUALUEFI_DIR=$dst" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # --- Tooling: BaseTools, Python deps, NASM/iASL/LLVM ---
+      - name: Clone Prebuilt BaseTools (Win32) (skip if exists)
+        shell: powershell
+        run: |
+          $dst = "$env:EDK2_DIR\BaseTools\Bin\Win32"
+          if (Test-Path $dst) {
+            Write-Host "SKIP: $dst already exists."
+          } else {
+            New-Item -ItemType Directory -Force -Path $dst | Out-Null
+            git clone --recursive https://github.com/tianocore/edk2-BaseTools-win32.git $dst
+          }
+
+      - name: Export EDK_TOOLS_PATH / EDK_TOOLS_BIN (+PATH)
+        shell: powershell
+        run: |
+          $tools = "$env:EDK2_DIR\BaseTools"
+          $bin   = Join-Path $tools 'Bin\Win32'
+          if (-not (Test-Path (Join-Path $bin 'build.exe'))) {
+            throw "Missing BaseTools binaries at $bin (expected build.exe)."
+          }
+          "EDK_TOOLS_PATH=$tools" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "EDK_TOOLS_BIN=$bin"    | Out-File -FilePath $env:GITHUB_ENV -Append
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install EDK II Python Requirements
+        shell: powershell
+        run: |
+          py -m pip install --upgrade pip
+          py -m pip install -r "$env:EDK2_DIR\pip-requirements.txt"
+
+      - name: Install NASM + iASL + LLVM (retry-safe)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Install-Choco([string]$pkg) {
+            for ($i=1; $i -le 3; $i++) {
+              choco install -y --no-progress $pkg
+              if ($LASTEXITCODE -eq 0) { return }
+              Write-Host "WARN: $pkg install attempt $i failed with $LASTEXITCODE. Retrying..."
+              Start-Sleep -Seconds (5 * $i)
+            }
+            throw "Failed to install $pkg via Chocolatey."
+          }
+          Install-Choco 'nasm'
+          Install-Choco 'iasl'
+          Install-Choco 'llvm'
+
+      - name: Resolve & Export NASM_PREFIX / IASL_PREFIX (+PATH)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Resolve-Exe([string]$name, [string[]]$candidates, [string[]]$extraRoots) {
+            $hits = @()
+            foreach ($c in $candidates) { if (Test-Path $c) { $hits += $c } }
+            if (-not $hits) {
+              foreach ($root in $extraRoots) {
+                if (Test-Path $root) {
+                  $f = Get-ChildItem -Path $root -Recurse -Filter $name -ErrorAction SilentlyContinue | Select-Object -First 1
+                  if ($f) { $hits += $f.FullName; break }
+                }
+              }
+            }
+            if (-not $hits) {
+              $cmd = Get-Command $name -ErrorAction SilentlyContinue
+              if ($cmd) { $hits += $cmd.Path }
+            }
+            return $hits | Select-Object -First 1
+          }
+
+          function Export-Prefix([string]$var, [string]$exePath) {
+            if ([string]::IsNullOrWhiteSpace($exePath)) { return $false }
+            $dir = Split-Path $exePath -Parent
+            if ([string]::IsNullOrWhiteSpace($dir)) { return $false }
+            "$var=$dir\" | Out-File -FilePath $env:GITHUB_ENV -Append
+            $dir        | Out-File -FilePath $env:GITHUB_PATH -Append
+            Write-Host "$var -> $dir\"
+            return $true
+          }
+
+          $nasm = Resolve-Exe 'nasm.exe' @(
+            "$env:ChocolateyInstall\bin\nasm.exe",
+            "C:\ProgramData\chocolatey\bin\nasm.exe",
+            "$env:ProgramFiles\NASM\nasm.exe",
+            "$env:ProgramFiles(x86)\NASM\nasm.exe",
+            "C:\NASM\nasm.exe"
+          ) @("C:\ProgramData\chocolatey", "$env:ProgramFiles", "$env:ProgramFiles(x86)")
+          if (-not (Export-Prefix 'NASM_PREFIX' $nasm)) { Write-Host "WARN: NASM not found." } else { try { & $nasm -v } catch {} }
+
+          $iasl = Resolve-Exe 'iasl.exe' @(
+            "$env:ChocolateyInstall\bin\iasl.exe",
+            "C:\ProgramData\chocolatey\bin\iasl.exe",
+            "C:\ASL\iasl.exe"
+          ) @("C:\ProgramData\chocolatey", "$env:ProgramFiles", "$env:ProgramFiles(x86)")
+          if (-not (Export-Prefix 'IASL_PREFIX' $iasl)) { Write-Host "WARN: iASL not found." } else { try { & $iasl -v } catch {} }
+
+      - name: Sanity Check NASM/IASL
+        shell: cmd
+        run: |
+          echo NASM_PREFIX=%NASM_PREFIX%
+          echo IASL_PREFIX=%IASL_PREFIX%
+          where nasm
+          where iasl
+
+      - name: Run EDK II edksetup (no rebuild)
+        shell: cmd
+        run: |
+          cd /d "%EDK2_DIR%"
+          call edksetup.bat
+
+      # --- Build: VisualUefi -> EfiGuard ---
+      - name: Find MSBuild (no external action)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msb = $null
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $msb = & $vswhere -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
+          }
+          if (-not $msb) {
+            $candidates = @(
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe",
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe",
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
+            )
+            foreach ($p in $candidates) { if (Test-Path $p) { $msb = $p; break } }
+          }
+          if (-not $msb) { throw "MSBuild.exe not found. Install VS/Build Tools on the runner." }
+          "MSBUILD_EXE=$msb" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "MSBUILD_EXE -> $msb"
+
+      - name: Build VisualUefi (Release x64)
+        shell: cmd
+        run: |
+          "%MSBUILD_EXE%" "%VISUALUEFI_DIR%\EDK-II\EDK-II.sln" /m /p:Configuration=Release /p:Platform=x64
+
+      - name: Build EfiGuardDxe + EfiDSEFix (MSBuild, Release x64)
+        shell: cmd
+        run: |
+          "%MSBUILD_EXE%" "%PKG_DIR%\EfiGuardDxe\EfiGuardDxe.vcxproj" /m /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=%PKG_DIR%/"
+          "%MSBUILD_EXE%" "%PKG_DIR%\Application\EfiDSEFix\src\EfiDSEFix.vcxproj" /m /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=%PKG_DIR%/"
+
+      - name: Stage Artifacts (flat root)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pkg    = $env:PKG_DIR
+          $efiDxe = Join-Path $pkg 'x64\Release\EfiGuardDxe.efi'
+          $dseExe = Join-Path $pkg 'Application\EfiDSEFix\bin\EfiDSEFix.exe'
+
+          if (-not (Test-Path $efiDxe)) { throw "Missing: $efiDxe" }
+          if (-not (Test-Path $dseExe)) { throw "Missing: $dseExe" }
+
+          $root = 'artifacts'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+
+          Copy-Item $efiDxe (Join-Path $root 'EfiGuardDxe.efi') -Force
+          Copy-Item $dseExe (Join-Path $root 'EfiDSEFix.exe') -Force
+
+      - name: Upload Artifacts (flat)
+        uses: actions/upload-artifact@v4
+        with:
+          name: EfiGuard-minimal
+          if-no-files-found: error
+          path: artifacts/*
