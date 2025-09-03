@@ -209,16 +209,15 @@ jobs:
           "MSBUILD_EXE=$msb" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "MSBUILD_EXE -> $msb"
 
-      - name: Build VisualUefi (Release x64)
+      - name: Build VisualUefi (MSBuild, Release x64)
         shell: cmd
         run: |
           "%MSBUILD_EXE%" "%VISUALUEFI_DIR%\EDK-II\EDK-II.sln" /m /p:Configuration=Release /p:Platform=x64
 
-      - name: Build EfiGuardDxe + Loader + EfiDSEFix (MSBuild, Release x64)
+      - name: Build EfiGuardDxe + EfiDSEFix (MSBuild, Release x64)
         shell: cmd
         run: |
           "%MSBUILD_EXE%" "%PKG_DIR%\EfiGuardDxe\EfiGuardDxe.vcxproj" /m /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=%PKG_DIR%/"
-          "%MSBUILD_EXE%" "%PKG_DIR%\Application\Loader\Loader.vcxproj" /m /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=%PKG_DIR%/"
           "%MSBUILD_EXE%" "%PKG_DIR%\Application\EfiDSEFix\src\EfiDSEFix.vcxproj" /m /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=%PKG_DIR%/"
 
       - name: Stage Artifacts (flat root)
@@ -227,18 +226,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $pkg    = $env:PKG_DIR
           $efiDxe = Join-Path $pkg 'x64\Release\EfiGuardDxe.efi'
-          $efiLer = Join-Path $pkg 'x64\Release\Loader.efi'
           $dseExe = Join-Path $pkg 'Application\EfiDSEFix\bin\EfiDSEFix.exe'
 
           if (-not (Test-Path $efiDxe)) { throw "Missing: $efiDxe" }
-          if (-not (Test-Path $efiLer)) { throw "Missing: $efiLer" }
           if (-not (Test-Path $dseExe)) { throw "Missing: $dseExe" }
 
           $root = 'artifacts'
           New-Item -ItemType Directory -Force -Path $root | Out-Null
 
           Copy-Item $efiDxe (Join-Path $root 'EfiGuardDxe.efi') -Force
-          Copy-Item $efiLer (Join-Path $root 'Loader.efi') -Force
           Copy-Item $dseExe (Join-Path $root 'EfiDSEFix.exe') -Force
 
       - name: Upload Artifacts (flat)

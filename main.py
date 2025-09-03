@@ -14,12 +14,12 @@ def generate_guid():
     data4_hex = ", ".join(f"0x{b:x}" for b in data4)
     return f"0x{time_low:08x}, 0x{time_mid:04x}, 0x{time_hi_version:04x}, {{ {data4_hex} }}"
 
-def generate_string(len = 32):
+def generate_string(len):
     return ''.join([ secrets.choice(PATTERN) for _ in range(len) ])
 
 def main(argv):
     guid = generate_guid()
-    varname = generate_string()
+    varname = generate_string(random.randint(16, 64))
     cookie = random.randint(0x00000000, 0xFFFFFFFF)
 
     print(f'GUID:    {guid}')
