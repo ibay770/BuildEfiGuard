@@ -44,7 +44,7 @@ jobs:
           if (Test-Path $dst) {
             Write-Host "SKIP: $dst already exists."
           } else {
-            git clone --recursive https://github.com/Mattiwatti/EfiGuard.git $dst
+            git clone --recursive https://github.com/RenardDev/EfiGuard.git $dst
           }
 
       - name: Clone VisualUefi into WORK_SPACE
@@ -219,6 +219,13 @@ jobs:
         run: |
           "%MSBUILD_EXE%" "%PKG_DIR%\EfiGuardDxe\EfiGuardDxe.vcxproj" /m /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=%PKG_DIR%/"
           "%MSBUILD_EXE%" "%PKG_DIR%\Application\EfiDSEFix\src\EfiDSEFix.vcxproj" /m /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=%PKG_DIR%/"
+
+      - name: Build Loader
+        shell: cmd
+        run: |
+          cd /d "%EDK2_DIR%"
+          call edksetup.bat
+          build -a X64 -t VS2015 -p EfiGuardPkg/EfiGuardPkg.dsc -b RELEASE
 
       - name: Stage Artifacts (flat root)
         shell: powershell
