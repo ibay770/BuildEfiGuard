@@ -26,6 +26,8 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          clean: false
 
       # --- Sources ---
       - name: Clone EDK II
@@ -167,24 +169,6 @@ jobs:
         run: |
           cd /d "%EDK2_DIR%"
           call edksetup.bat
-
-      - name: Run repository bootstrap (main.py)
-        shell: powershell
-        run: |
-          Set-Location $env:WORK_SPACE
-          if (-not (Test-Path ".\main.py")) { throw "main.py not found at repo root." }
-          py -3 .\main.py .\EfiGuard.h .\EfiGuard.new.h
-
-      - name: Replace EfiGuard.h in PKG
-        shell: powershell
-        run: |
-          $src = Join-Path $env:WORK_SPACE 'EfiGuard.new.h'
-          $dst = Join-Path $env:PKG_DIR 'Include\Protocol\EfiGuard.h'
-          if (-not (Test-Path $src)) { throw "Source header not found: $src" }
-          $dstDir = Split-Path $dst -Parent
-          New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
-          Copy-Item -LiteralPath $src -Destination $dst -Force
-          Write-Host "Replaced: $dst"
 
       # --- Build: VisualUefi -> EfiGuard ---
       - name: Find MSBuild (no external action)
